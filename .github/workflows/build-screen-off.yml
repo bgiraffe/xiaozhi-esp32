@@ -1,0 +1,51 @@
+name: Build xiaozhi (lckfb szpi-esp32s3 + auto screen off)
+
+# 手動按 Run workflow，或每次 push 都自動編譯
+on:
+  workflow_dispatch:
+  push:
+
+jobs:
+  build:
+    name: Build lichuang-dev (v2.4.2 + screen-off patch)
+    runs-on: ubuntu-latest
+    container:
+      image: espressif/idf:v6.0.2
+
+    steps:
+      # 1) 取得你的 fork（裡面有改好的 board 檔案）
+      - name: Checkout this fork
+        uses: actions/checkout@v4
+
+      # 2) 取得官方 v2.4.2 原始碼，確保其他行為跟你現在手上的固件一致
+      - name: Checkout upstream xiaozhi-esp32 v2.4.2
+        uses: actions/checkout@v4
+        with:
+          repository: 78/xiaozhi-esp32
+          ref: v2.4.2
+          path: src
+
+      # 3) 套用熄屏改動（把你 fork 裡改好的那個檔案，覆蓋到 v2.4.2 原始碼上）
+      - name: Apply screen-off patch
+        run: |
+          cp main/boards/lckfb/szpi-esp32s3/lichuang_dev_board.cc \
+             src/main/boards/lckfb/szpi-esp32s3/lichuang_dev_board.cc
+          echo "---- diff ----"
+          grep -n "kScreenOffSeconds\|StartScreenTimer\|WakeScreen" src/main/boards/lckfb/szpi-esp32s3/lichuang_dev_board.cc
+
+      # 4) 編譯（官方建置腳本：會套用 config.json 的 CONFIG_USE_DEVICE_AEC=y）
+      - name: Build
+        shell: bash
+        working-directory: src
+        run: |
+          source $IDF_PATH/export.sh
+          python scripts/build.py lckfb/szpi-esp32s3 --name lichuang-dev
+          ls -lh build/merged-binary.bin
+
+      # 5) 上傳成品：merged-binary.bin（燒到 0x0）
+      - name: Upload firmware
+        uses: actions/upload-artifact@v4
+        with:
+          name: xiaozhi-lichuang-dev-screenoff
+          path: src/build/merged-binary.bin
+          if-no-files-found: error
