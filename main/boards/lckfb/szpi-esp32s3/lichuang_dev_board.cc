@@ -89,6 +89,7 @@ private:
     bool last_release_was_long_ = false;
     bool voice_mode_ = false;                       // 語音模式：螢幕長亮 + 連續對話
     bool sleepy_ = false;                           // 語音模式閒置太久，進入愛睏表情
+    bool suppress_wake_ = false;                    // 長按說話期間，不要因為「有活動」就亮屏
     uint32_t last_listen_ms_ = 0;
     DeviceState last_state_ = kDeviceStateUnknown;  // 用來偵測「剛講完」
     uint8_t saved_brightness_ = kFallbackBrightness;
@@ -128,10 +129,18 @@ private:
 
         bool active = !app.CanEnterSleepMode() || state != kDeviceStateIdle;
 
+        if (!active) {
+            // 回到閒置 -> 解除「長按期間不亮屏」的鎖
+            suppress_wake_ = false;
+        }
+
         if (active) {
-            // 講話中、播報中、升級中、配網中 -> 不熄屏；若已熄屏則立刻亮回來
+            // 講話中、播報中、升級中、配網中 -> 不熄屏
             idle_seconds_ = 0;
-            WakeScreen();
+            // 但如果是「長按說話」引起的活動，就不要把屏幕叫亮
+            if (!suppress_wake_) {
+                WakeScreen();
+            }
             return;
         }
 
@@ -306,6 +315,7 @@ private:
         // 按住 kLongPressMs：開始收音（屏幕狀態完全不變）
         boot_button_.OnLongPress([this]() {
             long_press_started_ = true;
+            suppress_wake_ = true;   // 別讓狀態變化把屏幕叫亮
             Application::GetInstance().StartListening();
             ESP_LOGI(TAG, "Long press -> start listening (screen untouched)");
         });
@@ -327,6 +337,7 @@ private:
                 return;
             }
             auto& app = Application::GetInstance();
+            suppress_wake_ = false;   // 任何短按都解除「長按不亮屏」的鎖
 
             if (screen_off_) {
                 WakeScreen();
@@ -346,10 +357,9 @@ private:
                 voice_mode_ = false;
                 sleepy_ = false;
                 voice_idle_seconds_ = 0;
-                if (app.GetDeviceState() == kDeviceStateListening) {
-                    app.StopListening();
-                }
-                ESP_LOGI(TAG, "Voice mode OFF");
+                // 不呼叫 StopListening：正在進行的那一輪讓它自然結束，
+                // 這樣「退出」不會變成「立刻送出」
+                ESP_LOGI(TAG, "Voice mode OFF (current turn continues)");
             } else {
                 voice_mode_ = true;
                 sleepy_ = false;
