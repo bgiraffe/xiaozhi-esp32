@@ -74,20 +74,19 @@ private:
     static constexpr uint16_t kLongPressMs        = 400;   // 按住多久開始收音
     static constexpr bool     kTouchWake          = false; // 觸摸喚醒（已測試完，關閉）
 
-    // 單擊模式（對話開著）
+    // 對話中的閒置計時（愛睏 / 關屏）
     static constexpr int      kSleepyAfterSec     = 180;   // 閒置 3 分鐘 -> 愛睏表情
     static constexpr int      kClickOffAfterSec   = 210;   // 再過 30 秒（3 分 30 秒）-> 關屏
 
     // ================= 狀態 =================
     esp_timer_handle_t screen_timer_ = nullptr;
     int idle_seconds_ = 0;
-    int click_idle_seconds_ = 0;
+    int conv_idle_seconds_ = 0;
     int tick_div_ = 0;
     bool screen_off_ = false;
     bool long_press_started_ = false;
     bool last_release_was_long_ = false;
-    bool click_mode_ = false;                       // true = 單擊模式（對話開著）；false = 長按模式
-    bool sleepy_ = false;                           // 單擊模式閒置太久，進入愛睏表情
+    bool sleepy_ = false;                           // 對話中閒置太久，進入愛睏表情
     bool suppress_wake_ = false;                    // 長按說話期間，不要因為「有活動」就亮屏
     uint8_t saved_brightness_ = kFallbackBrightness;
     esp_lcd_touch_handle_t tp_ = nullptr;
@@ -114,19 +113,19 @@ private:
         DeviceState state = app.GetDeviceState();
         bool one_second = ((++tick_div_) % 5) == 0;   // 200ms x 5 = 1 秒
 
-        // ================= 單擊模式（對話開著）=================
-        // 這裡完全交給原廠狀態機：它自己會收音、回應、可打斷。
-        // 我們只做兩件事：計時（愛睏/關屏）＋ 有聲音就亮屏。
-        if (click_mode_) {
-            bool active = app.IsVoiceDetected() || (state == kDeviceStateSpeaking);
+        // ===== 對話中（狀態由裝置自己決定，我不猜）=====
+        // 排除「長按說話」那一輪：那是長按模式，維持原本的 30 秒邏輯
+        bool in_conversation =
+            (state == kDeviceStateListening || state == kDeviceStateSpeaking) && !suppress_wake_;
 
-            if (active) {
-                click_idle_seconds_ = 0;
+        if (in_conversation) {
+            if (app.IsVoiceDetected()) {
+                conv_idle_seconds_ = 0;
                 if (sleepy_) {
                     SetSleepyFace(false);
                 }
                 if (screen_off_) {
-                    ESP_LOGI(TAG, "Click mode: voice detected -> screen on");
+                    ESP_LOGI(TAG, "Conversation: voice detected -> screen on");
                     WakeScreen();
                 }
                 return;
@@ -136,20 +135,26 @@ private:
                 return;
             }
 
-            click_idle_seconds_++;
+            conv_idle_seconds_++;
 
-            if (!sleepy_ && click_idle_seconds_ >= kSleepyAfterSec) {
-                ESP_LOGI(TAG, "Click mode idle %d s -> sleepy", click_idle_seconds_);
+            if (!sleepy_ && conv_idle_seconds_ >= kSleepyAfterSec) {
+                ESP_LOGI(TAG, "Conversation idle %d s -> sleepy", conv_idle_seconds_);
                 SetSleepyFace(true);
             }
-            if (!screen_off_ && click_idle_seconds_ >= kClickOffAfterSec) {
-                ESP_LOGI(TAG, "Click mode idle %d s -> screen off", click_idle_seconds_);
+            if (!screen_off_ && conv_idle_seconds_ >= kClickOffAfterSec) {
+                ESP_LOGI(TAG, "Conversation idle %d s -> screen off", conv_idle_seconds_);
                 SleepScreen();
             }
             return;
         }
 
-        // ================= 長按模式（沒在對話）：原本的 30 秒熄屏 =================
+        // 離開對話就重置計時
+        conv_idle_seconds_ = 0;
+        if (sleepy_ && !screen_off_) {
+            SetSleepyFace(false);
+        }
+
+        // ===== 一般情況：idle 30 秒熄屏 =====
         bool busy = !app.CanEnterSleepMode() || state != kDeviceStateIdle;
 
         if (!busy) {
@@ -223,10 +228,8 @@ private:
         }
 
         backlight->SetBrightness(0);  // permanent = false，不寫入 NVS
-        ESP_LOGI(TAG, "Screen off (mode=%s, idle=%d s, saved brightness %d)",
-                 click_mode_ ? "click" : "ptt",
-                 click_mode_ ? click_idle_seconds_ : idle_seconds_,
-                 saved_brightness_);
+        ESP_LOGI(TAG, "Screen off (conv idle=%d s, idle=%d s, saved brightness %d)",
+                 conv_idle_seconds_, idle_seconds_, saved_brightness_);
     }
 
     void WakeScreen() {
@@ -278,15 +281,16 @@ private:
             long_press_started_ = false;
         });
 
-        // 按住 kLongPressMs：開始收音（只在「長按模式」有效，單擊模式時不干預）
+        // 按住 kLongPressMs：只在「沒在對話」時有效（對話中長按完全不干預）
         boot_button_.OnLongPress([this]() {
-            if (click_mode_) {
-                // 單擊模式（對話開著）時長按無效：兩套手勢分開，互不干擾
+            auto& app = Application::GetInstance();
+            if (app.GetDeviceState() != kDeviceStateIdle) {
+                // 對話中（聆聽/說話/連線）-> 長按無效，避免打斷
                 return;
             }
             long_press_started_ = true;
             suppress_wake_ = true;   // 別讓狀態變化把屏幕叫亮
-            Application::GetInstance().StartListening();
+            app.StartListening();
             ESP_LOGI(TAG, "Long press -> start listening (screen untouched)");
         });
 
@@ -322,25 +326,13 @@ private:
                 return;
             }
 
-            // 短按 = 切換模式 ＋ fire 一次短按（就是原廠那顆鍵做的事：ToggleChatState）
-            if (!click_mode_) {
-                click_mode_ = true;         // 長按模式 -> 單擊模式
-                click_idle_seconds_ = 0;
-                idle_seconds_ = 0;
-                if (sleepy_) {
-                    SetSleepyFace(false);
-                }
-                app.ToggleChatState();      // 開始對話（原廠單擊行為）
-                ESP_LOGI(TAG, "Mode -> CLICK (conversation on)");
-            } else {
-                click_mode_ = false;        // 單擊模式 -> 長按模式
-                click_idle_seconds_ = 0;
-                if (sleepy_) {
-                    SetSleepyFace(false);
-                }
-                app.ToggleChatState();      // 結束這一輪（原廠單擊行為）
-                ESP_LOGI(TAG, "Mode -> PRESS-TO-TALK (conversation off)");
+            // 短按 = 原廠那顆鍵的行為：開/關對話
+            app.ToggleChatState();
+            conv_idle_seconds_ = 0;
+            if (sleepy_) {
+                SetSleepyFace(false);
             }
+            ESP_LOGI(TAG, "Short press -> toggle chat");
         });
 
 #if CONFIG_USE_DEVICE_AEC
