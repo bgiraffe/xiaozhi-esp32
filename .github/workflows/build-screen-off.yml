@@ -1,13 +1,12 @@
 name: Build xiaozhi (lckfb szpi-esp32s3 + auto screen off)
 
-# 手動按 Run workflow（可選要不要大臉 UI），或每次 push 都自動編譯
+# 只有你手動按 Run workflow 才會編譯（上傳檔案不會自動觸發）
 on:
   workflow_dispatch:
     inputs:
       emote:
         description: "大臉表情 UI（1=開, 0=關）"
         default: "1"
-  push:
 
 jobs:
   build:
@@ -38,8 +37,9 @@ jobs:
           grep -n "kScreenOffSeconds\|StartScreenTimer\|WakeScreen" src/main/boards/lckfb/szpi-esp32s3/lichuang_dev_board.cc
 
       # 4) 可選：改成「大臉表情」UI（CONFIG_USE_EMOTE_MESSAGE_STYLE）
+      #    ⚠️ push 觸發時沒有 inputs，null 會被當成 0，所以必須先補預設值 '1'
       - name: Enable big-face emote UI
-        if: ${{ github.event.inputs.emote != '0' }}
+        if: ${{ (github.event.inputs.emote || '1') != '0' }}
         shell: bash
         run: |
           python - <<'PY'
