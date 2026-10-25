@@ -85,7 +85,6 @@ private:
     int tick_div_ = 0;
     bool screen_off_ = false;
     bool long_press_started_ = false;
-    bool last_release_was_long_ = false;
     bool sleepy_ = false;                           // 對話中閒置太久，進入愛睏表情
     bool suppress_wake_ = false;                    // 長按說話期間，不要因為「有活動」就亮屏
     uint8_t saved_brightness_ = kFallbackBrightness;
@@ -284,8 +283,10 @@ private:
         // 按住 kLongPressMs：只在「沒在對話」時有效（對話中長按完全不干預）
         boot_button_.OnLongPress([this]() {
             auto& app = Application::GetInstance();
-            if (app.GetDeviceState() != kDeviceStateIdle) {
+            DeviceState st = app.GetDeviceState();
+            if (st != kDeviceStateIdle) {
                 // 對話中（聆聽/說話/連線）-> 長按無效，避免打斷
+                ESP_LOGI(TAG, "Long press ignored (state=%d)", (int)st);
                 return;
             }
             long_press_started_ = true;
@@ -298,18 +299,13 @@ private:
         boot_button_.OnPressUp([this]() {
             if (long_press_started_) {
                 long_press_started_ = false;
-                last_release_was_long_ = true;
                 Application::GetInstance().StopListening();
                 ESP_LOGI(TAG, "Release -> stop listening");
             }
         });
 
-        // 短按：黑屏只亮屏；亮屏走原本語義
+        // 短按：黑屏只亮屏；亮屏 = 原廠的開/關對話
         boot_button_.OnClick([this]() {
-            if (last_release_was_long_) {   // 長按之後若仍補發 click，忽略一次
-                last_release_was_long_ = false;
-                return;
-            }
             auto& app = Application::GetInstance();
             suppress_wake_ = false;   // 任何短按都解除「長按不亮屏」的鎖
 
@@ -335,14 +331,9 @@ private:
             ESP_LOGI(TAG, "Short press -> toggle chat");
         });
 
-#if CONFIG_USE_DEVICE_AEC
-        boot_button_.OnDoubleClick([this]() {
-            auto& app = Application::GetInstance();
-            if (app.GetDeviceState() == kDeviceStateIdle) {
-                app.SetAecMode(app.GetAecMode() == kAecOff ? kAecOnDeviceSide : kAecOff);
-            }
-        });
-#endif
+        // 注意：原廠的「雙擊切換 AEC 模式」已移除。
+        // 原因：短按關閉對話後立刻長按時，第二次按壓會落進雙擊判定窗口，
+        // 被 DOUBLE_CLICK 吃掉 → LONG_PRESS 永遠不發 → 長按看起來「沒反應」。
     }
 
     void InitializeSt7789Display() {
