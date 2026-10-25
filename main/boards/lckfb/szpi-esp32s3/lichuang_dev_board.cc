@@ -8,7 +8,6 @@
 #include "i2c_device.h"
 #include "esp32_camera.h"
 #include "mcp_server.h"
-#include "press_to_talk_mcp_tool.h"
 
 #include <esp_log.h>
 #include <esp_timer.h>
@@ -68,20 +67,30 @@ private:
     Display* display_;
     Pca9557* pca9557_;
     Esp32Camera* camera_;
-    PressToTalkMcpTool* press_to_talk_tool_ = nullptr;
 
     // ================= 可調參數 =================
-    static constexpr int      kScreenOffSeconds   = 30;   // 幾秒自動熄屏
-    static constexpr uint8_t  kFallbackBrightness = 75;   // 熄屏前量不到亮度時的備用值
-    static constexpr uint16_t kLongPressMs        = 400;  // 按住多久開始收音
-    static constexpr bool     kTouchWake          = true; // 【測試用】黑屏時觸摸是否亮屏
+    static constexpr int      kScreenOffSeconds   = 30;    // 一般模式：幾秒熄屏
+    static constexpr uint8_t  kFallbackBrightness = 75;    // 熄屏前量不到亮度時的備用值
+    static constexpr uint16_t kLongPressMs        = 400;   // 按住多久開始收音
+    static constexpr bool     kTouchWake          = false; // 觸摸喚醒（已測試完，關閉）
+
+    // 語音模式
+    static constexpr int      kSleepyAfterSec     = 180;   // 閒置 3 分鐘 -> 愛睏表情
+    static constexpr int      kVoiceOffAfterSec   = 210;   // 再過 30 秒（3 分 30 秒）-> 關屏
+    static constexpr uint32_t kReopenCooldownMs   = 8000;  // 多久重新開一次麥，避免提示音連發
 
     // ================= 狀態 =================
     esp_timer_handle_t screen_timer_ = nullptr;
     int idle_seconds_ = 0;
+    int voice_idle_seconds_ = 0;
+    int tick_div_ = 0;
     bool screen_off_ = false;
     bool long_press_started_ = false;
     bool last_release_was_long_ = false;
+    bool voice_mode_ = false;                       // 語音模式：螢幕長亮 + 連續對話
+    bool sleepy_ = false;                           // 語音模式閒置太久，進入愛睏表情
+    uint32_t last_listen_ms_ = 0;
+    DeviceState last_state_ = kDeviceStateUnknown;  // 用來偵測「剛講完」
     uint8_t saved_brightness_ = kFallbackBrightness;
     esp_lcd_touch_handle_t tp_ = nullptr;
 
@@ -96,14 +105,28 @@ private:
             .skip_unhandled_events = true,
         };
         ESP_ERROR_CHECK(esp_timer_create(&timer_args, &screen_timer_));
-        ESP_ERROR_CHECK(esp_timer_start_periodic(screen_timer_, 1000 * 1000));
-        ESP_LOGI(TAG, "Screen idle timer started (%d s, long press %d ms)",
+        // 200ms 一次：一般熄屏只需要秒級，但語音模式要「一出聲就亮」，所以要快一點
+        ESP_ERROR_CHECK(esp_timer_start_periodic(screen_timer_, 200 * 1000));
+        ESP_LOGI(TAG, "Screen idle timer started (off %d s, long press %d ms)",
                  kScreenOffSeconds, (int)kLongPressMs);
     }
 
     void OnScreenTimerTick() {
         auto& app = Application::GetInstance();
-        bool active = !app.CanEnterSleepMode() || app.GetDeviceState() != kDeviceStateIdle;
+        DeviceState state = app.GetDeviceState();
+
+        // 偵測「它剛講完」：Speaking -> Idle
+        bool finished_speaking = (last_state_ == kDeviceStateSpeaking && state == kDeviceStateIdle);
+        last_state_ = state;
+
+        bool one_second = ((++tick_div_) % 5) == 0;   // 200ms x 5 = 1 秒
+
+        if (voice_mode_) {
+            OnVoiceModeTick(app, state, finished_speaking, one_second);
+            return;
+        }
+
+        bool active = !app.CanEnterSleepMode() || state != kDeviceStateIdle;
 
         if (active) {
             // 講話中、播報中、升級中、配網中 -> 不熄屏；若已熄屏則立刻亮回來
@@ -122,9 +145,78 @@ private:
             return;
         }
 
-        if (++idle_seconds_ >= kScreenOffSeconds) {
+        if (one_second && ++idle_seconds_ >= kScreenOffSeconds) {
             SleepScreen();
         }
+    }
+
+    // 語音模式：螢幕長亮 -> 3 分鐘愛睏 -> 3 分 30 秒關屏 -> 一出聲就醒
+    void OnVoiceModeTick(Application& app, DeviceState state, bool finished_speaking, bool one_second) {
+        idle_seconds_ = 0;  // 一般模式的自動熄屏在語音模式不作用
+
+        bool busy = app.IsVoiceDetected() || (state == kDeviceStateSpeaking);
+
+        if (busy) {
+            voice_idle_seconds_ = 0;
+            if (sleepy_) {
+                SetSleepyFace(false);
+            }
+            if (screen_off_) {
+                ESP_LOGI(TAG, "Voice mode: activity -> screen on");
+                WakeScreen();
+            }
+            return;
+        }
+
+        if (finished_speaking) {
+            voice_idle_seconds_ = 0;
+            ReopenListen(app);
+            return;
+        }
+
+        if (state == kDeviceStateIdle) {
+            // 它沒在收音 -> 重新開麥（有冷卻時間，避免提示音連發）
+            ReopenListen(app);
+        }
+
+        if (!one_second) {
+            return;
+        }
+
+        voice_idle_seconds_++;
+
+        if (!sleepy_ && voice_idle_seconds_ >= kSleepyAfterSec) {
+            ESP_LOGI(TAG, "Voice mode idle %d s -> sleepy face", voice_idle_seconds_);
+            SetSleepyFace(true);
+        }
+        if (!screen_off_ && voice_idle_seconds_ >= kVoiceOffAfterSec) {
+            ESP_LOGI(TAG, "Voice mode idle %d s -> screen off", voice_idle_seconds_);
+            SleepScreen();
+        }
+    }
+
+    void ReopenListen(Application& app) {
+        if (app.GetDeviceState() != kDeviceStateIdle) {
+            return;
+        }
+        uint32_t now_ms = (uint32_t)(esp_timer_get_time() / 1000);
+        if (last_listen_ms_ != 0 && (now_ms - last_listen_ms_) < kReopenCooldownMs) {
+            return;
+        }
+        last_listen_ms_ = now_ms;
+        app.StartListening();
+        ESP_LOGI(TAG, "Voice mode: reopen mic");
+    }
+
+    void SetSleepyFace(bool sleepy) {
+        sleepy_ = sleepy;
+        auto display = GetDisplay();
+        if (display == nullptr) {
+            return;
+        }
+        // 這兩組名字是本版資源裡最接近「愛睏 / 精神」的表情
+        display->SetEmotion(sleepy ? "relaxed" : "happy");
+        ESP_LOGI(TAG, "Emotion -> %s", sleepy ? "relaxed(sleepy)" : "happy(awake)");
     }
 
     // 直接讀 FT5x06（不依賴 LVGL 的 inactive time，結果確定）
@@ -248,9 +340,28 @@ private:
                 EnterWifiConfigMode();
                 return;
             }
-            // In press-to-talk mode the click event is handled by long press
-            if (!press_to_talk_tool_ || !press_to_talk_tool_->IsPressToTalkEnabled()) {
-                app.ToggleChatState();
+
+            // 亮屏時短按：進/出語音模式
+            if (voice_mode_) {
+                voice_mode_ = false;
+                sleepy_ = false;
+                voice_idle_seconds_ = 0;
+                if (app.GetDeviceState() == kDeviceStateListening) {
+                    app.StopListening();
+                }
+                ESP_LOGI(TAG, "Voice mode OFF");
+            } else {
+                voice_mode_ = true;
+                sleepy_ = false;
+                voice_idle_seconds_ = 0;
+                idle_seconds_ = 0;
+                last_listen_ms_ = 0;
+                WakeScreen();
+                if (app.GetDeviceState() == kDeviceStateIdle) {
+                    app.StartListening();
+                    last_listen_ms_ = (uint32_t)(esp_timer_get_time() / 1000);
+                }
+                ESP_LOGI(TAG, "Voice mode ON (screen stays on)");
             }
         });
 
@@ -397,10 +508,6 @@ private:
                 EnterWifiConfigMode();
                 return true;
             });
-
-        // Allow switching between press-to-talk (长按说话) and click-to-talk (单击唤醒)
-        press_to_talk_tool_ = new PressToTalkMcpTool();
-        press_to_talk_tool_->Initialize();
     }
 
 public:
