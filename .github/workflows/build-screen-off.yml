@@ -1,8 +1,12 @@
 name: Build xiaozhi (lckfb szpi-esp32s3 + auto screen off)
 
-# 手動按 Run workflow，或每次 push 都自動編譯
+# 手動按 Run workflow（可選要不要大臉 UI），或每次 push 都自動編譯
 on:
   workflow_dispatch:
+    inputs:
+      emote:
+        description: "大臉表情 UI（1=開, 0=關）"
+        default: "1"
   push:
 
 jobs:
@@ -30,8 +34,24 @@ jobs:
         run: |
           cp main/boards/lckfb/szpi-esp32s3/lichuang_dev_board.cc \
              src/main/boards/lckfb/szpi-esp32s3/lichuang_dev_board.cc
-          echo "---- diff ----"
+          echo "---- check ----"
           grep -n "kScreenOffSeconds\|StartScreenTimer\|WakeScreen" src/main/boards/lckfb/szpi-esp32s3/lichuang_dev_board.cc
+
+      # 4) 可選：改成「大臉表情」UI（CONFIG_USE_EMOTE_MESSAGE_STYLE）
+      - name: Enable big-face emote UI
+        if: ${{ github.event.inputs.emote != '0' }}
+        shell: bash
+        run: |
+          python - <<'PY'
+          import json, pathlib
+          p = pathlib.Path("src/main/boards/lckfb/szpi-esp32s3/config.json")
+          d = json.loads(p.read_text(encoding="utf-8"))
+          for b in d["builds"]:
+              if "CONFIG_USE_EMOTE_MESSAGE_STYLE=y" not in b["sdkconfig_append"]:
+                  b["sdkconfig_append"].append("CONFIG_USE_EMOTE_MESSAGE_STYLE=y")
+          p.write_text(json.dumps(d, ensure_ascii=False, indent=4), encoding="utf-8")
+          print(p.read_text(encoding="utf-8"))
+          PY
 
       # 4) 編譯（官方建置腳本：會套用 config.json 的 CONFIG_USE_DEVICE_AEC=y）
       - name: Build
@@ -42,10 +62,14 @@ jobs:
           python scripts/build.py lckfb/szpi-esp32s3 --name lichuang-dev
           ls -lh build/merged-binary.bin
 
-      # 5) 上傳成品：merged-binary.bin（燒到 0x0）
+      # 5) 上傳成品：
+      #    - merged-binary.bin：整包，燒 0x0（會清掉 NVS，要重新配網）
+      #    - xiaozhi.bin：只有應用程式，燒 0x10000（保留 Wi-Fi 與綁定）
       - name: Upload firmware
         uses: actions/upload-artifact@v4
         with:
           name: xiaozhi-lichuang-dev-screenoff
-          path: src/build/merged-binary.bin
+          path: |
+            src/build/merged-binary.bin
+            src/build/*.bin
           if-no-files-found: error
