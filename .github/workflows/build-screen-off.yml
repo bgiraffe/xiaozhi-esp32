@@ -7,6 +7,9 @@ on:
       emote:
         description: "大臉表情 UI（1=開, 0=關）"
         default: "1"
+      ota_url:
+        description: "OTA 伺服器位址（留空 = 用官方 xiaozhi.me）"
+        default: "http://34.92.79.126:18003/xiaozhi/ota/"
 
 jobs:
   build:
@@ -36,19 +39,25 @@ jobs:
           echo "---- check ----"
           grep -n "kScreenOffSeconds\|StartScreenTimer\|WakeScreen" src/main/boards/lckfb/szpi-esp32s3/lichuang_dev_board.cc
 
-      # 4) 可選：改成「大臉表情」UI（CONFIG_USE_EMOTE_MESSAGE_STYLE）
+      # 4) 可選：改成「大臉表情」UI（CONFIG_USE_EMOTE_MESSAGE_STYLE）+ 設定 OTA 位址
       #    ⚠️ push 觸發時沒有 inputs，null 會被當成 0，所以必須先補預設值 '1'
-      - name: Enable big-face emote UI
-        if: ${{ (github.event.inputs.emote || '1') != '0' }}
+      - name: Enable big-face emote UI + OTA URL
+        if: ${{ (github.event.inputs.emote || '1') != '0' || github.event.inputs.ota_url }}
         shell: bash
+        env:
+          OTA_URL: ${{ github.event.inputs.ota_url }}
+          EMOTE_ON: ${{ github.event.inputs.emote || '1' }}
         run: |
           python - <<'PY'
-          import json, pathlib
+          import json, os, pathlib
+          ota = (os.environ.get("OTA_URL") or "").strip()
           p = pathlib.Path("src/main/boards/lckfb/szpi-esp32s3/config.json")
           d = json.loads(p.read_text(encoding="utf-8"))
           for b in d["builds"]:
-              if "CONFIG_USE_EMOTE_MESSAGE_STYLE=y" not in b["sdkconfig_append"]:
+              if os.environ.get("EMOTE_ON", "1") != "0" and "CONFIG_USE_EMOTE_MESSAGE_STYLE=y" not in b["sdkconfig_append"]:
                   b["sdkconfig_append"].append("CONFIG_USE_EMOTE_MESSAGE_STYLE=y")
+              if ota:
+                  b["sdkconfig_append"].append('CONFIG_OTA_URL="%s"' % ota)
           p.write_text(json.dumps(d, ensure_ascii=False, indent=4), encoding="utf-8")
           print(p.read_text(encoding="utf-8"))
           PY
