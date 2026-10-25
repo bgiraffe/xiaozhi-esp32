@@ -60,11 +60,15 @@ jobs:
         run: |
           source $IDF_PATH/export.sh
           python scripts/build.py lckfb/szpi-esp32s3 --name lichuang-dev
-          ls -lh build/merged-binary.bin
+          ls -lh build/*.bin
+          echo "=========== flash_args（各分區的燒錄偏移）==========="
+          cat build/flash_args || true
 
       # 5) 上傳成品：
       #    - merged-binary.bin：整包，燒 0x0（會清掉 NVS，要重新配網）
       #    - xiaozhi.bin：只有應用程式，燒 0x10000（保留 Wi-Fi 與綁定）
+      #    - generated_assets.bin：assets 分區，燒到 flash_args 裡標的偏移（保留 Wi-Fi）
+      #    - flash_args：記錄每個檔案該燒到哪個位址
       - name: Upload firmware
         uses: actions/upload-artifact@v4
         with:
@@ -72,4 +76,5 @@ jobs:
           path: |
             src/build/merged-binary.bin
             src/build/*.bin
+            src/build/flash_args
           if-no-files-found: error
