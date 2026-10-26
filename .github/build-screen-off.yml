@@ -1,0 +1,104 @@
+name: Build xiaozhi (lckfb szpi-esp32s3 + auto screen off)
+
+# 只有你手動按 Run workflow 才會編譯（上傳檔案不會自動觸發）
+on:
+  workflow_dispatch:
+    inputs:
+      emote:
+        description: "大臉表情 UI（1=開, 0=關）"
+        default: "1"
+      ota_url:
+        description: "OTA 伺服器位址（留空 = 用官方 xiaozhi.me）"
+        default: "http://iot.bgiraffe.cc:18003/xiaozhi/ota/"
+
+jobs:
+  build:
+    name: Build lichuang-dev (v2.4.2 + screen-off patch)
+    runs-on: ubuntu-latest
+    container:
+      image: espressif/idf:v6.0.2
+
+    steps:
+      # 1) 取得你的 fork（裡面有改好的 board 檔案）
+      - name: Checkout this fork
+        uses: actions/checkout@v4
+
+      # 2) 取得官方 v2.4.2 原始碼，確保其他行為跟你現在手上的固件一致
+      - name: Checkout upstream xiaozhi-esp32 v2.4.2
+        uses: actions/checkout@v4
+        with:
+          repository: 78/xiaozhi-esp32
+          ref: v2.4.2
+          path: src
+
+      # 3) 套用熄屏改動（把你 fork 裡改好的那個檔案，覆蓋到 v2.4.2 原始碼上）
+      - name: Apply screen-off patch
+        run: |
+          cp main/boards/lckfb/szpi-esp32s3/lichuang_dev_board.cc \
+             src/main/boards/lckfb/szpi-esp32s3/lichuang_dev_board.cc
+          echo "---- check ----"
+          grep -n "kScreenOffSeconds\|StartScreenTimer\|WakeScreen" src/main/boards/lckfb/szpi-esp32s3/lichuang_dev_board.cc
+
+      # 4) 可選：改成「大臉表情」UI（CONFIG_USE_EMOTE_MESSAGE_STYLE）+ 設定 OTA 位址
+      #    ⚠️ push 觸發時沒有 inputs，null 會被當成 0，所以必須先補預設值 '1'
+      - name: Enable big-face emote UI + OTA URL
+        if: ${{ (github.event.inputs.emote || '1') != '0' || github.event.inputs.ota_url }}
+        shell: bash
+        env:
+          OTA_URL: ${{ github.event.inputs.ota_url }}
+          EMOTE_ON: ${{ github.event.inputs.emote || '1' }}
+        run: |
+          python - <<'PY'
+          import json, os, pathlib
+          ota = (os.environ.get("OTA_URL") or "").strip()
+          p = pathlib.Path("src/main/boards/lckfb/szpi-esp32s3/config.json")
+          d = json.loads(p.read_text(encoding="utf-8"))
+          for b in d["builds"]:
+              if os.environ.get("EMOTE_ON", "1") != "0" and "CONFIG_USE_EMOTE_MESSAGE_STYLE=y" not in b["sdkconfig_append"]:
+                  b["sdkconfig_append"].append("CONFIG_USE_EMOTE_MESSAGE_STYLE=y")
+              if ota:
+                  b["sdkconfig_append"].append('CONFIG_OTA_URL="%s"' % ota)
+          p.write_text(json.dumps(d, ensure_ascii=False, indent=4), encoding="utf-8")
+          print(p.read_text(encoding="utf-8"))
+          PY
+
+      # 4.5) 音頻 24k -> 16k（省頻寬/CPU）。注意：輸入與輸出必須相同，
+      #      否則 BoxAudioCodec::CreateDuplexChannels 會 assert 重啟。
+      - name: Set 16k audio sample rate
+        shell: bash
+        run: |
+          f=src/main/boards/lckfb/szpi-esp32s3/config.h
+          sed -i -E 's/(AUDIO_INPUT_SAMPLE_RATE[[:space:]]+)24000/\116000/' "$f"
+          sed -i -E 's/(AUDIO_OUTPUT_SAMPLE_RATE[[:space:]]+)24000/\116000/' "$f"
+          echo "---- audio rates ----"
+          grep -n "SAMPLE_RATE" "$f"
+          if ! grep -qE 'AUDIO_INPUT_SAMPLE_RATE[[:space:]]+16000' "$f" || \
+             ! grep -qE 'AUDIO_OUTPUT_SAMPLE_RATE[[:space:]]+16000' "$f"; then
+            echo "ERROR: sample rate patch failed"; exit 1
+          fi
+
+      # 4) 編譯（官方建置腳本：會套用 config.json 的 CONFIG_USE_DEVICE_AEC=y）
+      - name: Build
+        shell: bash
+        working-directory: src
+        run: |
+          source $IDF_PATH/export.sh
+          python scripts/build.py lckfb/szpi-esp32s3 --name lichuang-dev
+          ls -lh build/*.bin
+          echo "=========== flash_args（各分區的燒錄偏移）==========="
+          cat build/flash_args || true
+
+      # 5) 上傳成品：
+      #    - merged-binary.bin：整包，燒 0x0（會清掉 NVS，要重新配網）
+      #    - xiaozhi.bin：只有應用程式，燒 0x10000（保留 Wi-Fi 與綁定）
+      #    - generated_assets.bin：assets 分區，燒到 flash_args 裡標的偏移（保留 Wi-Fi）
+      #    - flash_args：記錄每個檔案該燒到哪個位址
+      - name: Upload firmware
+        uses: actions/upload-artifact@v4
+        with:
+          name: xiaozhi-lichuang-dev-screenoff
+          path: |
+            src/build/merged-binary.bin
+            src/build/*.bin
+            src/build/flash_args
+          if-no-files-found: error
