@@ -62,6 +62,15 @@ jobs:
           print(p.read_text(encoding="utf-8"))
           PY
 
+      # 4.5) 輸出音頻降採樣率 24k -> 16k（省頻寬/CPU，小喇叭聽不出差別）
+      - name: Set 16k output sample rate
+        shell: bash
+        run: |
+          f=src/main/boards/lckfb/szpi-esp32s3/config.h
+          sed -i 's/AUDIO_OUTPUT_SAMPLE_RATE 24000/AUDIO_OUTPUT_SAMPLE_RATE 16000/' "$f"
+          echo "---- audio rates ----"
+          grep -n "SAMPLE_RATE" "$f"
+
       # 4) 編譯（官方建置腳本：會套用 config.json 的 CONFIG_USE_DEVICE_AEC=y）
       - name: Build
         shell: bash
