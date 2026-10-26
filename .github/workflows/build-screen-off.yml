@@ -9,7 +9,7 @@ on:
         default: "1"
       ota_url:
         description: "OTA 伺服器位址（留空 = 用官方 xiaozhi.me）"
-        default: "http://34.92.79.126:18003/xiaozhi/ota/"
+        default: "http://iot.bgiraffe.cc:18003/xiaozhi/ota/"
 
 jobs:
   build:
