@@ -131,6 +131,18 @@ INIT_NEW = (
     "    auto& board = Board::GetInstance();"
 )
 
+PREV_OLD = (
+    "void Application::HandleStateChangedEvent() {\n"
+    "    DeviceState new_state = state_machine_.GetState();"
+)
+PREV_NEW = (
+    "void Application::HandleStateChangedEvent() {\n"
+    "    static DeviceState s_prev_state = kDeviceStateUnknown;\n"
+    "    DeviceState prev_state = s_prev_state;\n"
+    "    DeviceState new_state = state_machine_.GetState();\n"
+    "    s_prev_state = new_state;"
+)
+
 IDLE_OLD = (
     "            audio_service_.EnableVoiceProcessing(false);\n"
     "            audio_service_.EnableWakeWordDetection(true);\n"
@@ -141,8 +153,9 @@ IDLE_OLD = (
 IDLE_NEW = (
     "            audio_service_.EnableVoiceProcessing(false);\n"
     "            audio_service_.EnableWakeWordDetection(true);\n"
-    "            // 非 persist 模式：回到待機就斷開連線（省電；persist 模式保留）\n"
-    "            if (!persist_enabled()) {\n"
+    "            // 非 persist 模式：只在「回覆播完（Speaking -> Idle）」才斷線，\n"
+    "            // 避免鬆手瞬間（Listening -> Idle）就切斷、收不到最後音頻。\n"
+    "            if (prev_state == kDeviceStateSpeaking && !persist_enabled()) {\n"
     "                Schedule([this]() {\n"
     "                    if (protocol_ && protocol_->IsAudioChannelOpened()) {\n"
     "                        protocol_->CloseAudioChannel();\n"
@@ -230,7 +243,8 @@ def main() -> int:
     ok &= patch_text(APP, APP_ANCHOR, APP_BRANCH, "persist_ws", "application.cc/config")
     ok &= patch_text(APP, INIT_OLD, INIT_NEW, "不跨重啟保留", "application.cc/boot-reset")
     ok &= patch_text(APP, PERSIST_HELPER_OLD, PERSIST_HELPER_NEW, "static bool persist_enabled", "application.cc/helper")
-    ok &= patch_text(APP, IDLE_OLD, IDLE_NEW, "回到待機就斷開連線", "application.cc/idle-close")
+    ok &= patch_text(APP, PREV_OLD, PREV_NEW, "s_prev_state", "application.cc/prev-state")
+    ok &= patch_text(APP, IDLE_OLD, IDLE_NEW, "回覆播完", "application.cc/idle-close")
     ok &= patch_text(PROTO_CC, INCLUDE_OLD, INCLUDE_NEW, "esp_timer.h", "protocol.cc/includes")
     ok &= patch_text(PROTO_CC, TIMEOUT_OLD, TIMEOUT_NEW, "persist 模式：連線常駐", "protocol.cc/timeout")
     return 0 if ok else 1
