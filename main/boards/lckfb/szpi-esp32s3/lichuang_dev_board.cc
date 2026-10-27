@@ -232,7 +232,10 @@ private:
         backlight->SetBrightness(0);  // permanent = false，不寫入 NVS
         // 真正的關屏：送 ST7789 DISPOFF，面板停止掃描（比只關背光更省電）
         if (panel_ != nullptr) {
-            esp_lcd_panel_disp_on_off(panel_, false);
+            esp_err_t err = esp_lcd_panel_disp_on_off(panel_, false);
+            ESP_LOGI(TAG, "Panel DISPOFF -> %s", esp_err_to_name(err));
+        } else {
+            ESP_LOGW(TAG, "Panel handle is null, skipped DISPOFF");
         }
         ESP_LOGI(TAG, "Screen off (conv idle=%d s, idle=%d s, saved brightness %d)",
                  conv_idle_seconds_, idle_seconds_, saved_brightness_);
@@ -245,7 +248,8 @@ private:
         }
         screen_off_ = false;
         if (panel_ != nullptr) {
-            esp_lcd_panel_disp_on_off(panel_, true);
+            esp_err_t err = esp_lcd_panel_disp_on_off(panel_, true);
+            ESP_LOGI(TAG, "Panel DISPON -> %s", esp_err_to_name(err));
         }
         backlight->SetBrightness(saved_brightness_);
         ESP_LOGI(TAG, "Screen on (brightness %d)", saved_brightness_);
