@@ -104,6 +104,79 @@ jobs:
           PY
           grep -n "camera tool moved out\|auto camera = board.GetCamera" src/main/mcp_server.cc
 
+      # 4.7) 可切換的常駐連線模式（persist_ws）
+      #      - 伺服器可發 {"type":"config","persist_ws":true/false} 即時切換
+      #      - 模式存 NVS（Settings "websocket"/"persist_ws"），重開機仍有效
+      #      - persist 開啟時 CloseAudioChannel 不 reset WebSocket，靠伺服器 keepalive 續命
+      - name: Enable persistent WS mode (server-switchable)
+        shell: bash
+        run: |
+          python3 - <<'PY'
+          import pathlib
+
+          # --- application.cc: handle {"type":"config","persist_ws":...} ---
+          app = pathlib.Path("src/main/application.cc")
+          s = app.read_text(encoding="utf-8")
+          anchor = '        } else {\n            ESP_LOGW(TAG, "Unknown message type: %s", type->valuestring);\n        }'
+          branch = '''        } else if (strcmp(type->valuestring, "config") == 0) {
+            auto persist = cJSON_GetObjectItem(root, "persist_ws");
+            if (cJSON_IsBool(persist)) {
+                bool persist_on = cJSON_IsTrue(persist);
+                Settings settings("websocket", true);
+                settings.SetBool("persist_ws", persist_on);
+                ESP_LOGI(TAG, "config: persist_ws=%d", persist_on ? 1 : 0);
+                if (!persist_on) {
+                    Schedule([this]() { protocol_->CloseAudioChannel(); });
+                }
+            }
+        } else {
+            ESP_LOGW(TAG, "Unknown message type: %s", type->valuestring);
+        }'''
+          if "persist_ws" not in s:
+              assert anchor in s, "application.cc anchor not found"
+              s = s.replace(anchor, branch, 1)
+              app.write_text(s, encoding="utf-8")
+          print("application.cc patched:", "persist_ws" in s)
+
+          # --- websocket_protocol.cc: honor persist flag ---
+          ws = pathlib.Path("src/main/protocols/websocket_protocol.cc")
+          w = ws.read_text(encoding="utf-8")
+
+          close_old = '''void WebsocketProtocol::CloseAudioChannel(bool send_goodbye) {
+    (void)send_goodbye;  // Websocket doesn't need to send goodbye message
+    websocket_.reset();
+}'''
+          close_new = '''void WebsocketProtocol::CloseAudioChannel(bool send_goodbye) {
+    (void)send_goodbye;  // Websocket doesn't need to send goodbye message
+    Settings settings("websocket", false);
+    if (settings.GetBool("persist_ws", false)) {
+        ESP_LOGI(TAG, "persist_ws on: keep websocket alive");
+        return;
+    }
+    websocket_.reset();
+}'''
+          if "persist_ws on: keep websocket alive" not in w:
+              assert close_old in w, "CloseAudioChannel anchor not found"
+              w = w.replace(close_old, close_new, 1)
+
+          open_old = '''bool WebsocketProtocol::OpenAudioChannel() {
+    Settings settings("websocket", false);'''
+          open_new = '''bool WebsocketProtocol::OpenAudioChannel() {
+    // persist 模式下 WebSocket 常駐，已連線就直接重用（不重送 hello）
+    if (websocket_ != nullptr && websocket_->IsConnected()) {
+        error_occurred_ = false;
+        return true;
+    }
+    Settings settings("websocket", false);'''
+          if "已連線就直接重用" not in w:
+              assert open_old in w, "OpenAudioChannel anchor not found"
+              w = w.replace(open_old, open_new, 1)
+
+          ws.write_text(w, encoding="utf-8")
+          print("websocket_protocol.cc patched:", "persist_ws on: keep websocket alive" in w)
+          PY
+          grep -n "persist_ws" src/main/application.cc src/main/protocols/websocket_protocol.cc | head
+
       # 4) 編譯（官方建置腳本：會套用 config.json 的 CONFIG_USE_DEVICE_AEC=y）
       - name: Build
         shell: bash
