@@ -104,11 +104,15 @@ jobs:
           PY
           grep -n "camera tool moved out\|auto camera = board.GetCamera" src/main/mcp_server.cc
 
-      # 4.7) persist_ws：暫時停用（會擋住用戶主動退出收音），保留腳本與 API 以備後用
-      # - name: Enable persistent WS mode (server-switchable)
-      #   shell: bash
-      #   run: |
-      #     python3 patch/apply_persist_ws.py
+      # 4.7) 可切換的常駐連線模式（persist_ws，安全版）
+      #      - 自動待機路徑：persist 開啟時保留 WebSocket（靠伺服器 keepalive 續命）
+      #      - 用戶主動退出（單擊）：走 CloseAudioChannelForce()，一定關閉
+      #      - 伺服器可發 {"type":"config","persist_ws":bool} 即時切換，存 NVS
+      - name: Enable persistent WS mode (server-switchable)
+        shell: bash
+        run: |
+          python3 patch/apply_persist_ws.py
+          grep -n "persist_ws\|CloseAudioChannelForce" src/main/application.cc src/main/protocols/websocket_protocol.cc | head -8
 
       # 4) 編譯（官方建置腳本：會套用 config.json 的 CONFIG_USE_DEVICE_AEC=y）
       - name: Build
