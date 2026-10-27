@@ -89,6 +89,7 @@ private:
     bool suppress_wake_ = false;                    // 長按說話期間，不要因為「有活動」就亮屏
     uint8_t saved_brightness_ = kFallbackBrightness;
     esp_lcd_touch_handle_t tp_ = nullptr;
+    esp_lcd_panel_handle_t panel_ = nullptr;   // 保留面板 handle，用於 DISPOFF/DISPON
 
     void StartScreenTimer() {
         const esp_timer_create_args_t timer_args = {
@@ -229,6 +230,10 @@ private:
         }
 
         backlight->SetBrightness(0);  // permanent = false，不寫入 NVS
+        // 真正的關屏：送 ST7789 DISPOFF，面板停止掃描（比只關背光更省電）
+        if (panel_ != nullptr) {
+            esp_lcd_panel_disp_on_off(panel_, false);
+        }
         ESP_LOGI(TAG, "Screen off (conv idle=%d s, idle=%d s, saved brightness %d)",
                  conv_idle_seconds_, idle_seconds_, saved_brightness_);
     }
@@ -239,6 +244,9 @@ private:
             return;
         }
         screen_off_ = false;
+        if (panel_ != nullptr) {
+            esp_lcd_panel_disp_on_off(panel_, true);
+        }
         backlight->SetBrightness(saved_brightness_);
         ESP_LOGI(TAG, "Screen on (brightness %d)", saved_brightness_);
     }
@@ -369,6 +377,7 @@ private:
         esp_lcd_panel_swap_xy(panel, DISPLAY_SWAP_XY);
         esp_lcd_panel_mirror(panel, DISPLAY_MIRROR_X, DISPLAY_MIRROR_Y);
         esp_lcd_panel_disp_on_off(panel, true);
+        panel_ = panel;   // 存起來，SleepScreen/WakeScreen 要用
 
 #if CONFIG_USE_EMOTE_MESSAGE_STYLE
         display_ = new emote::EmoteDisplay(panel, panel_io, DISPLAY_WIDTH, DISPLAY_HEIGHT);
