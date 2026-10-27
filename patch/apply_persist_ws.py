@@ -86,7 +86,11 @@ TOGGLE_OLD = (
 )
 TOGGLE_NEW = (
     "    } else if (state == kDeviceStateListening) {\n"
-    "        protocol_->CloseAudioChannelForce();\n"
+    "        protocol_->CloseAudioChannel();\n"
+    "        // persist 模式下通道不會真的關閉，必須顯式回到 Idle 才能退出收音\n"
+    "        if (protocol_->IsAudioChannelOpened()) {\n"
+    "            SetDeviceState(kDeviceStateIdle);\n"
+    "        }\n"
     "    }"
 )
 
@@ -160,7 +164,8 @@ def main() -> int:
     ok &= patch_text(WS_H, WS_H_ANCHOR, WS_H_ADD, "CloseAudioChannelForce", "websocket_protocol.h")
     ok &= patch_text(WS_CC, CLOSE_OLD, CLOSE_NEW, "force close audio channel", "websocket_protocol.cc/close")
     ok &= patch_text(WS_CC, OPEN_OLD, OPEN_NEW, "已連線就直接重用", "websocket_protocol.cc/open")
-    # 注意：ToggleChat 的關閉路徑保持原樣——persist 模式下短按只停收音、保留連線。
+    # 短按退出收音：persist 下通道關不掉，需顯式回 Idle
+    ok &= patch_text(APP, TOGGLE_OLD, TOGGLE_NEW, "必須顯式回到 Idle", "application.cc/toggle")
     ok &= patch_text(APP, APP_ANCHOR, APP_BRANCH, "persist_ws", "application.cc/config")
     ok &= patch_text(PROTO_CC, INCLUDE_OLD, INCLUDE_NEW, "esp_timer.h", "protocol.cc/includes")
     ok &= patch_text(PROTO_CC, TIMEOUT_OLD, TIMEOUT_NEW, "persist 模式：連線常駐", "protocol.cc/timeout")
