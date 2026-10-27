@@ -135,7 +135,7 @@ volumes:
 | `agent-base-prompt.txt` | 6.5 KB → 1.1 KB 精簡模板 |
 | `opus_encoder_utils.py` | bitrate 改讀 `OPUS_BITRATE` |
 | `connection.py` | `ACTIVE_CONNECTIONS` 註冊表 + `_keepalive_loop`（預設關閉） |
-| `http_server.py` | `/api/devices`、`/api/say`（notify）、`/api/mode`、`/audio/{name}` 靜態服務 |
+| `http_server.py` | `/api/devices`、`/api/say`（notify）、`/api/mode`、`/audio/{name}`；`_is_conn_alive()` 驗證 WS 真的 OPEN（避免殘留連線被當成在線） |
 
 ### 4.3 `.config.yaml` 關鍵設定
 
@@ -253,6 +253,9 @@ py -3.12 -m esptool --chip esp32s3 -p COM5 -b 921600 write-flash 0x20000 "xiaozh
 切換：`POST /api/mode {"mode":"persist"}` / `{"mode":"normal"}` → 伺服器送
 `{"type":"config","persist_ws":bool}` → 裝置存 NVS 並即時套用。
 
+**開機一律回到 normal**：`Application::Initialize()` 會把 `persist_ws` 寫成 false，
+所以重開機後預設是 normal（短按關閉對話會斷線），需要常駐時再由伺服器開啟。
+
 固件改動（`patch/apply_persist_ws.py`）：
 
 | 改動 | 作用 |
@@ -262,6 +265,7 @@ py -3.12 -m esptool --chip esp32s3 -p COM5 -b 921600 write-flash 0x20000 "xiaozh
 | `OpenAudioChannel()` 重用已連線 | 不重送 hello |
 | ToggleChat 退出收音時顯式回 Idle | persist 下通道關不掉，靠這行退出 |
 | `IsTimeout()` persist 時回 false | 否則待機每 200ms 刷 `Channel timeout`，約 5 分鐘重啟 |
+| `Application::Initialize()` 清 `persist_ws` | 開機固定回 normal |
 
 已知限制：
 
