@@ -19,9 +19,13 @@ import pathlib
 import sys
 
 PROTO_H = pathlib.Path("src/main/protocols/protocol.h")
+PROTO_CC = pathlib.Path("src/main/protocols/protocol.cc")
 WS_H = pathlib.Path("src/main/protocols/websocket_protocol.h")
 WS_CC = pathlib.Path("src/main/protocols/websocket_protocol.cc")
 APP = pathlib.Path("src/main/application.cc")
+
+INCLUDE_OLD = '#include <esp_log.h>\n\n#define TAG "Protocol"'
+INCLUDE_NEW = '#include <esp_log.h>\n#include <esp_timer.h>\n#include "settings.h"\n\n#define TAG "Protocol"'
 
 PROTO_ANCHOR = "    virtual void CloseAudioChannel(bool send_goodbye = true) = 0;"
 PROTO_ADD = (
@@ -94,6 +98,30 @@ APP_ANCHOR = (
     '        }'
 )
 
+# Protocol::IsTimeout() 在 persist 模式要直接回 false，
+# 否則待機時每 200ms 印一次 "Channel timeout" 錯誤，約 5 分鐘後 watchdog 重啟。
+TIMEOUT_OLD = (
+    'bool Protocol::IsTimeout() const {\n'
+    '    const int kTimeoutSeconds = 120;'
+)
+
+TIMEOUT_NEW = (
+    'bool Protocol::IsTimeout() const {\n'
+    '    // persist 模式：連線常駐，不判超時（否則待機會每 200ms 刷一次錯誤，導致重啟）\n'
+    '    static bool persist_cached = false;\n'
+    '    static int64_t persist_checked_ms = 0;\n'
+    '    int64_t now_ms = esp_timer_get_time() / 1000;\n'
+    '    if (now_ms - persist_checked_ms > 3000) {\n'
+    '        Settings settings("websocket", false);\n'
+    '        persist_cached = settings.GetBool("persist_ws", false);\n'
+    '        persist_checked_ms = now_ms;\n'
+    '    }\n'
+    '    if (persist_cached) {\n'
+    '        return false;\n'
+    '    }\n'
+    '    const int kTimeoutSeconds = 120;'
+)
+
 APP_BRANCH = (
     '        } else if (strcmp(type->valuestring, "config") == 0) {\n'
     '            auto persist = cJSON_GetObjectItem(root, "persist_ws");\n'
@@ -126,7 +154,7 @@ def patch_text(path: pathlib.Path, anchor: str, replacement: str, marker: str, l
 
 
 def main() -> int:
-    for p in (PROTO_H, WS_H, WS_CC, APP):
+    for p in (PROTO_H, PROTO_CC, WS_H, WS_CC, APP):
         if not p.exists():
             print(f"missing {p}（src/ 尚未 checkout？）", file=sys.stderr)
             return 1
@@ -138,6 +166,8 @@ def main() -> int:
     ok &= patch_text(WS_CC, OPEN_OLD, OPEN_NEW, "已連線就直接重用", "websocket_protocol.cc (open)")
     ok &= patch_text(APP, TOGGLE_OLD, TOGGLE_NEW, "CloseAudioChannelForce();", "application.cc (toggle)")
     ok &= patch_text(APP, APP_ANCHOR, APP_BRANCH, "persist_ws", "application.cc (config)")
+    ok &= patch_text(PROTO_CC, INCLUDE_OLD, INCLUDE_NEW, "settings.h", "protocol.cc (includes)")
+    ok &= patch_text(PROTO_CC, TIMEOUT_OLD, TIMEOUT_NEW, "persist 模式：連線常駐", "protocol.cc (timeout)")
     return 0 if ok else 1
 
 
