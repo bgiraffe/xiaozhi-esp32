@@ -117,6 +117,20 @@ APP_BRANCH = (
     "        }"
 )
 
+INIT_OLD = (
+    "void Application::Initialize() {\n"
+    "    auto& board = Board::GetInstance();"
+)
+INIT_NEW = (
+    "void Application::Initialize() {\n"
+    "    // 開機預設回到 normal 模式：persist_ws 不跨重啟保留\n"
+    "    {\n"
+    '        Settings settings("websocket", true);\n'
+    '        settings.SetBool("persist_ws", false);\n'
+    "    }\n"
+    "    auto& board = Board::GetInstance();"
+)
+
 TIMEOUT_OLD = (
     "bool Protocol::IsTimeout() const {\n"
     "    const int kTimeoutSeconds = 120;"
@@ -167,6 +181,7 @@ def main() -> int:
     # 短按退出收音：persist 下通道關不掉，需顯式回 Idle
     ok &= patch_text(APP, TOGGLE_OLD, TOGGLE_NEW, "必須顯式回到 Idle", "application.cc/toggle")
     ok &= patch_text(APP, APP_ANCHOR, APP_BRANCH, "persist_ws", "application.cc/config")
+    ok &= patch_text(APP, INIT_OLD, INIT_NEW, "不跨重啟保留", "application.cc/boot-reset")
     ok &= patch_text(PROTO_CC, INCLUDE_OLD, INCLUDE_NEW, "esp_timer.h", "protocol.cc/includes")
     ok &= patch_text(PROTO_CC, TIMEOUT_OLD, TIMEOUT_NEW, "persist 模式：連線常駐", "protocol.cc/timeout")
     return 0 if ok else 1
