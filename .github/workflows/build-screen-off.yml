@@ -62,20 +62,47 @@ jobs:
           print(p.read_text(encoding="utf-8"))
           PY
 
-      # 4.5) 音頻 24k -> 16k（省頻寬/CPU）。注意：輸入與輸出必須相同，
+      # 4.5) 音頻 24k -> 16k（省頻寬/CPU）。輸入與輸出必須相同，
       #      否則 BoxAudioCodec::CreateDuplexChannels 會 assert 重啟。
+      #      已實測：16k 可正常收音與播放。
       - name: Set 16k audio sample rate
         shell: bash
         run: |
           f=src/main/boards/lckfb/szpi-esp32s3/config.h
           sed -i -E 's/(AUDIO_INPUT_SAMPLE_RATE[[:space:]]+)24000/\116000/' "$f"
           sed -i -E 's/(AUDIO_OUTPUT_SAMPLE_RATE[[:space:]]+)24000/\116000/' "$f"
-          echo "---- audio rates ----"
           grep -n "SAMPLE_RATE" "$f"
           if ! grep -qE 'AUDIO_INPUT_SAMPLE_RATE[[:space:]]+16000' "$f" || \
              ! grep -qE 'AUDIO_OUTPUT_SAMPLE_RATE[[:space:]]+16000' "$f"; then
             echo "ERROR: sample rate patch failed"; exit 1
           fi
+
+      # 4.6) 把相機工具移出 HAVE_LVGL 守衛。
+      #      開 CONFIG_USE_EMOTE_MESSAGE_STYLE 後 HAVE_LVGL 不再定義，
+      #      原本 mcp_server.cc 的 self.camera.take_photo 會整段被編譯掉。
+      - name: Enable camera tool with emote UI
+        shell: bash
+        run: |
+          python3 - <<'PY'
+          import pathlib
+          p = pathlib.Path("src/main/mcp_server.cc")
+          s = p.read_text(encoding="utf-8")
+          marker = "// camera tool moved out of HAVE_LVGL guard"
+          if marker not in s:
+              s = s.replace(
+                  "    auto camera = board.GetCamera();",
+                  "    " + marker + "\n#endif\n    auto camera = board.GetCamera();",
+                  1,
+              )
+              s = s.replace(
+                  "    }\n#endif\n\n    // Restore the original tools list",
+                  "    }\n\n    // Restore the original tools list",
+                  1,
+              )
+              p.write_text(s, encoding="utf-8")
+          print("patched:", marker in s)
+          PY
+          grep -n "camera tool moved out\|auto camera = board.GetCamera" src/main/mcp_server.cc
 
       # 4) 編譯（官方建置腳本：會套用 config.json 的 CONFIG_USE_DEVICE_AEC=y）
       - name: Build
