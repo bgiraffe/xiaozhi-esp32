@@ -154,7 +154,9 @@ private:
         }
 
         // ===== 一般情況：idle 30 秒熄屏 =====
-        bool busy = !app.CanEnterSleepMode() || state != kDeviceStateIdle;
+        // 注意：不要用 app.CanEnterSleepMode()——persist_ws 模式下通道常開，
+        // 它會一直回 false，導致螢幕永不熄滅。只看裝置狀態即可。
+        bool busy = state != kDeviceStateIdle;
 
         if (!busy) {
             // 回到閒置 -> 解除「長按期間不亮屏」的鎖
