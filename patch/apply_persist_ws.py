@@ -160,7 +160,7 @@ def main() -> int:
     ok &= patch_text(WS_H, WS_H_ANCHOR, WS_H_ADD, "CloseAudioChannelForce", "websocket_protocol.h")
     ok &= patch_text(WS_CC, CLOSE_OLD, CLOSE_NEW, "force close audio channel", "websocket_protocol.cc/close")
     ok &= patch_text(WS_CC, OPEN_OLD, OPEN_NEW, "已連線就直接重用", "websocket_protocol.cc/open")
-    ok &= patch_text(APP, TOGGLE_OLD, TOGGLE_NEW, "CloseAudioChannelForce();", "application.cc/toggle")
+    # 注意：ToggleChat 的關閉路徑保持原樣——persist 模式下短按只停收音、保留連線。
     ok &= patch_text(APP, APP_ANCHOR, APP_BRANCH, "persist_ws", "application.cc/config")
     ok &= patch_text(PROTO_CC, INCLUDE_OLD, INCLUDE_NEW, "esp_timer.h", "protocol.cc/includes")
     ok &= patch_text(PROTO_CC, TIMEOUT_OLD, TIMEOUT_NEW, "persist 模式：連線常駐", "protocol.cc/timeout")
