@@ -289,7 +289,19 @@ tts_one_sentence(text, sentence_id)    # 只投 MIDDLE，不會重置
 
 ### 限制
 
-- **裝置必須在線**才會推送成功。伺服器端閒置超時已設 `close_connection_no_voice_time: 86400`（24 小時），但裝置仍可能自行斷線/重連，呼叫前先查 `/api/devices`。
+- **裝置必須在線**才會推送成功。
+- **實測結論（2026-10-27）**：裝置的 WebSocket 壽命 = 收音會話壽命。
+  退出長收音後固件呼叫 `WebsocketProtocol::CloseAudioChannel()`，內部直接 `websocket_.reset()`，
+  連線立刻結束（實測 2 秒內 release）。所以「退出收音 → 待機 → 推送」目前收不到。
+- 伺服器端閒置超時已設 `close_connection_no_voice_time: 86400`（24 小時），但這不是限制來源；
+  限制在裝置端。
+- 已加伺服器 keepalive（`connection.py::_keepalive_loop`，每 60 秒發
+  `{"type":"keepalive"}`），用於對抗裝置端 `protocol.cc` 的 `kTimeoutSeconds = 120`
+  （120 秒收不到任何資料就判定通道超時）。目前因連線活不到 60 秒而尚無作用，
+  等固件改成常駐連線後才會生效。
+- 若要「隨時可推」，需要改固件：
+  1. `WebsocketProtocol::CloseAudioChannel()` 不 `reset()` WebSocket（只停音頻通道）
+  2. 待機時保持連線，靠上面那條 keepalive 續命
 - 推送與正常對話**可以交替**，實測互不干擾（每輪不同 `sentence_id`）。
 
 ---
@@ -297,8 +309,8 @@ tts_one_sentence(text, sentence_id)    # 只投 MIDDLE，不會重置
 ## 9. 待辦
 
 - [x] 主動推送：`POST /api/say`
+- [ ] 固件常駐連線（`CloseAudioChannel` 不 reset WS + 待機 keepalive）→ 解鎖「隨時推送」
 - [ ] 拍照加速（裝置端拍照上傳 ~7s，可考慮降解析度/JPEG 品質）
 - [ ] 天氣功能（需自備 QWeather key）
 - [ ] 串流 TTS 修好後再啟用（與「工具直出」路徑不相容）
-- [ ] 定時提醒示範（cron + say.sh）
-- [ ] 裝置常駐連線（目前會自行斷線重連）
+- [ ] 定時提醒示範（cron + say.sh，需先有常駐連線）
