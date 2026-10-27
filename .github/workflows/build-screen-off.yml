@@ -62,14 +62,20 @@ jobs:
           print(p.read_text(encoding="utf-8"))
           PY
 
-      # 4.5) 輸出音頻降採樣率 24k -> 16k（省頻寬/CPU，小喇叭聽不出差別）
-      - name: Set 16k output sample rate
+      # 4.5) 音頻 24k -> 16k（省頻寬/CPU）。注意：輸入與輸出必須相同，
+      #      否則 BoxAudioCodec::CreateDuplexChannels 會 assert 重啟。
+      - name: Set 16k audio sample rate
         shell: bash
         run: |
           f=src/main/boards/lckfb/szpi-esp32s3/config.h
-          sed -i 's/AUDIO_OUTPUT_SAMPLE_RATE 24000/AUDIO_OUTPUT_SAMPLE_RATE 16000/' "$f"
+          sed -i -E 's/(AUDIO_INPUT_SAMPLE_RATE[[:space:]]+)24000/\116000/' "$f"
+          sed -i -E 's/(AUDIO_OUTPUT_SAMPLE_RATE[[:space:]]+)24000/\116000/' "$f"
           echo "---- audio rates ----"
           grep -n "SAMPLE_RATE" "$f"
+          if ! grep -qE 'AUDIO_INPUT_SAMPLE_RATE[[:space:]]+16000' "$f" || \
+             ! grep -qE 'AUDIO_OUTPUT_SAMPLE_RATE[[:space:]]+16000' "$f"; then
+            echo "ERROR: sample rate patch failed"; exit 1
+          fi
 
       # 4) 編譯（官方建置腳本：會套用 config.json 的 CONFIG_USE_DEVICE_AEC=y）
       - name: Build
