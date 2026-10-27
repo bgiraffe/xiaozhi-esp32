@@ -306,11 +306,47 @@ tts_one_sentence(text, sentence_id)    # 只投 MIDDLE，不會重置
 
 ---
 
-## 9. 待辦
+## 9. 常駐連線模式（persist_ws，實驗中）
+
+目標：退出收音後仍保持 WebSocket，讓 `/api/say` 隨時可用。伺服器可切換：
+
+```bash
+POST http://iot.bgiraffe.cc:18003/api/mode
+X-API-Token: <token>
+{"mode":"persist"}    # 或 {"mode":"normal"}
+```
+
+固件補丁（`patch/apply_persist_ws.py`，CI 內套用）：
+
+| 檔案 | 改動 |
+|---|---|
+| `protocol.h` / `websocket_protocol.h` | 新增 `CloseAudioChannelForce()` |
+| `websocket_protocol.cc` | `CloseAudioChannel()` 在 persist 時保留 WS；`OpenAudioChannel()` 重用連線 |
+| `application.cc` | 處理 `{"type":"config","persist_ws":bool}`（存 NVS）；用戶單擊退出改走 `CloseAudioChannelForce()` |
+| `protocol.cc` | persist 時 `IsTimeout()` 直接回 false（3 秒快取的 NVS 讀取） |
+
+### 已解決
+
+1. **v1 卡死**：把 `CloseAudioChannel()` 全域 no-op，導致單擊也退不出收音。 → v2 拆出 Force 版本。
+2. **待機刷 log**：persist 待機時每 200ms 印 `Channel timeout`，約 5 分鐘後重啟。 → `IsTimeout()` 在 persist 時回 false。
+
+### 仍未解決（2026-10-27 18:1x）
+
+- persist 模式下裝置仍會**每隔約 5–6 分鐘重啟一次**（OTA 請求可見），原因未定位。
+- 需要 serial 抓到 reboot 前的 panic；若是 watchdog，可能與 WiFi 省電或長連線下的任務阻塞有關。
+- 目前預設 `WS_KEEPALIVE=0`（伺服器應用層 keepalive 會令裝置斷線，疑似裝置不認 `{"type":"keepalive"}`）。
+
+### 目前建議
+
+若不需要「隨時推送」，把模式切回 `normal`（或長按收音時才推送）即可，裝置穩定。
+
+---
+
+## 10. 待辦
 
 - [x] 主動推送：`POST /api/say`
-- [ ] 固件常駐連線（`CloseAudioChannel` 不 reset WS + 待機 keepalive）→ 解鎖「隨時推送」
+- [ ] 常駐連線：定位 5–6 分鐘重啟原因（需 serial panic）
 - [ ] 拍照加速（裝置端拍照上傳 ~7s，可考慮降解析度/JPEG 品質）
 - [ ] 天氣功能（需自備 QWeather key）
 - [ ] 串流 TTS 修好後再啟用（與「工具直出」路徑不相容）
-- [ ] 定時提醒示範（cron + say.sh，需先有常駐連線）
+- [ ] 定時提醒示範（cron + say.sh，需先有穩定長連線）
