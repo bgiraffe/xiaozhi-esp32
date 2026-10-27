@@ -119,6 +119,8 @@ volumes:
 | `vllm_openai.py` | prompt 加「口語化、不要編號、2-3 句」 | 視覺描述原本會念出「1. 2. 3.」 |
 | `agent-base-prompt.txt` | 6.5 KB → 1.1 KB 精簡模板 | 首字延遲（prompt 6225 → 800 字） |
 | `opus_encoder_utils.py` | bitrate 改讀 `OPUS_BITRATE` 環境變數 | 24k → 16kbps |
+| `connection.py` | 新增 `ACTIVE_CONNECTIONS` 註冊表（device_id → handler），連線建立時註冊、關閉時註銷 | 讓外部 API 能找到線上裝置 |
+| `http_server.py` | 新增 `GET /api/devices`、`POST /api/say` 與 `_push_say` 協程 | 主動推送 |
 
 ### 4.3 `.config.yaml` 關鍵設定
 
@@ -239,10 +241,64 @@ docker logs xiaozhi-esp32-server --since 5m 2>&1 | grep -Ei '识别到文本|Sen
 
 ---
 
-## 8. 待辦
+## 8. 主動推送（speak API）
 
-- [ ] 主動推送：`POST /api/say`（裝置需在線）
+讓伺服器**主動**叫裝置說話，不需要使用者先叫它。
+
+### API
+
+```bash
+GET  http://iot.bgiraffe.cc:18003/api/devices
+     X-API-Token: <token>
+     → {"ok":true,"devices":["10:51:db:80:ea:f4"]}
+
+POST http://iot.bgiraffe.cc:18003/api/say
+     X-API-Token: <token>
+     Content-Type: application/json; charset=utf-8
+     {"device_id":"10:51:db:80:ea:f4","text":"提醒你，十分鐘後開會"}
+     → {"ok":true,"device_id":"..."}
+```
+
+token 存放於 `/opt/xiaozhi/.say_token`（600），compose 以 `SAY_API_TOKEN` 注入。
+
+### 命令列
+
+```bash
+bash /opt/xiaozhi/say.sh "要說的話" [device_id]   # 不給 device_id 自動取第一台在線
+```
+
+### 實作要點（踩過的坑）
+
+`_push_say` 必須完整走一次協議狀態機，缺一不可：
+
+```
+send_tts_message(conn,"start")        # 裝置切到 speaking
+投 FIRST DTO                           # 只有 FIRST 會重置 tts_text_buff/processed_chars
+tts_one_sentence(text, sentence_id)    # 只投 MIDDLE，不會重置
+投 LAST DTO                            # 觸發自動 stop + clearSpeakStatus
+```
+
+四個關鍵修正：
+
+1. **`ContentType` 必須在模組層級匯入**（原本只在 handler 內局部 import，模組層級用會 NameError）。
+2. **每次推送換新的 `sentence_id`** 並清 `client_abort`，避免上輪殘留音頻／abort 吃掉本輪。
+3. **必須補投 `FIRST`**：`tts_one_sentence` 只發 MIDDLE，若剛結束一輪對話，`tts_text_buff` 與 `processed_chars` 還是舊的，新文本會被判定「沒有新句子」→ 永遠不出首包。
+4. **成功判據是「首包真的送出」**（`tts_audio_first_sentence` 由 True 變 False），不是隊列空——否則會假成功（有日誌沒聲音）。
+
+失敗路徑：首包 10 秒未出 → 換 `sentence_id`（丟棄遲到音頻）+ `stop` + `clearSpeakStatus`，記 WARNING。
+
+### 限制
+
+- **裝置必須在線**才會推送成功。伺服器端閒置超時已設 `close_connection_no_voice_time: 86400`（24 小時），但裝置仍可能自行斷線/重連，呼叫前先查 `/api/devices`。
+- 推送與正常對話**可以交替**，實測互不干擾（每輪不同 `sentence_id`）。
+
+---
+
+## 9. 待辦
+
+- [x] 主動推送：`POST /api/say`
 - [ ] 拍照加速（裝置端拍照上傳 ~7s，可考慮降解析度/JPEG 品質）
 - [ ] 天氣功能（需自備 QWeather key）
-- [ ] 串流 TTS 修好後再啟用（可省 ~0.3s/句）
-- [ ] 靜態 IP 或 continue 用域名（已用域名，DNS 改動即可）
+- [ ] 串流 TTS 修好後再啟用（與「工具直出」路徑不相容）
+- [ ] 定時提醒示範（cron + say.sh）
+- [ ] 裝置常駐連線（目前會自行斷線重連）
