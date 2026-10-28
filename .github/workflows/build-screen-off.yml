@@ -76,6 +76,13 @@ jobs:
           python3 patch/apply_persist_ws.py
           grep -n "persist_ws" main/application.cc | head -4
 
+      # 熄屏時停下大臉渲染（省 CPU/SPI）
+      - name: Stop rendering while screen off
+        shell: bash
+        run: |
+          python3 patch/apply_render_sleep.py
+          grep -n "emote_set_anim_visible" main/display/emote_display.cc
+
       - name: Build
         shell: bash
         run: |

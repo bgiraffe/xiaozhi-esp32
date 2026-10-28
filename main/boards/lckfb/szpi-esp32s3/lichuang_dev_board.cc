@@ -237,6 +237,10 @@ private:
         } else {
             ESP_LOGW(TAG, "Panel handle is null, skipped DISPOFF");
         }
+        // 停渲染：隱藏大臉動畫，播放器不再產幀（省 CPU/SPI）
+        if (auto display = GetDisplay()) {
+            display->SetPowerSaveMode(true);
+        }
         ESP_LOGI(TAG, "Screen off (conv idle=%d s, idle=%d s, saved brightness %d)",
                  conv_idle_seconds_, idle_seconds_, saved_brightness_);
     }
@@ -247,6 +251,10 @@ private:
             return;
         }
         screen_off_ = false;
+        // 恢復渲染
+        if (auto display = GetDisplay()) {
+            display->SetPowerSaveMode(false);
+        }
         if (panel_ != nullptr) {
             esp_err_t err = esp_lcd_panel_disp_on_off(panel_, true);
             ESP_LOGI(TAG, "Panel DISPON -> %s", esp_err_to_name(err));
