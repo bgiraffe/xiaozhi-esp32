@@ -41,6 +41,7 @@
 .github/workflows/build-screen-off.yml   手動觸發的建置流程
 patch/apply_camera_tool.py               相機工具移出 HAVE_LVGL 守衛
 patch/apply_persist_ws.py                常駐連線（persist_ws）補丁
+patch/apply_render_sleep.py              熄屏時停大臉渲染
 main/boards/lckfb/szpi-esp32s3/          板級檔案（含我們的 .cc/config.h/config.json）
 docs/PROJECT.md                          本文件
 ```
@@ -53,8 +54,15 @@ docs/PROJECT.md                          本文件
 3. 改 config.h：AUDIO_INPUT/OUTPUT_SAMPLE_RATE → 16000
 4. patch/apply_camera_tool.py
 5. patch/apply_persist_ws.py
-6. python scripts/build.py lckfb/szpi-esp32s3 --name lichuang-dev
+6. patch/apply_render_sleep.py
+7. python scripts/build.py lckfb/szpi-esp32s3 --name lichuang-dev
 ```
+
+### 伺服器端也有自己的 git repo
+
+`/opt/xiaozhi` 已 `git init`（本地，無 remote），追蹤：
+`docker-compose.yml`、`patches/*`、`say.sh`、`config.sample.yaml`（去敏）、`.gitignore`。
+`data/` 與 `.say_token` 不入版控。
 
 > **歷史教訓**：曾用 `v2.4.2` tag 編譯，但 v2.4.2 **沒有 `notify`**（沒有 `notify_player.cc`），
 > 導致「伺服器主動播放」永遠不可能成功。現已改用 fork 的 `main`（v2.5.3）。
@@ -67,15 +75,27 @@ docs/PROJECT.md                          本文件
 
 | 功能 | 行為 |
 |---|---|
-| 自動熄屏 | 閒置 30 秒關背光（只要 `state == Idle` 就計時） |
+| 自動熄屏 | 閒置 30 秒：背光 0 → ST7789 **DISPOFF** → 停大臉渲染（三層） |
+| 喚醒 | 短按：**DISPON** → 恢復渲染 → 背光回到先前亮度 |
 | 短按（黑屏） | 只亮屏 |
 | 短按（亮屏） | `ToggleChatState()`（開／關對話；persist 下不會斷線） |
 | 長按 400ms | `StartListening()`（PTT），鬆手 `StopListening()`；不改螢幕狀態 |
 | 雙擊 | 已移除（原本切 AEC，會吞掉長按） |
 | 音頻 | 輸入/輸出均 16 kHz（必須相同，否則 `CreateDuplexChannels` assert） |
 
-> **注意**：熄屏判斷**不能**用 `app.CanEnterSleepMode()`。persist 模式下通道常開，
+熄屏三層（實測 log）：
+
+```
+Backlight: Set brightness to 0
+Panel DISPOFF -> ESP_OK
+EmoteDisplay: SetPowerSaveMode: ON     ← 隱藏大臉，播放器停產幀
+```
+
+> **注意 1**：熄屏判斷**不能**用 `app.CanEnterSleepMode()`。persist 模式下通道常開，
 > 該函式永遠回 false，會導致螢幕永不熄滅。現在只看 `state != kDeviceStateIdle`。
+>
+> **注意 2**：`EmoteDisplay::SetPowerSaveMode()` 原本是空殼，現已 patch 成
+> `emote_set_anim_visible(handle, !on)`，否則大臉會一直以 30fps 渲染（白白燒 CPU）。
 
 ### 3.2 建置層補丁
 
@@ -167,6 +187,17 @@ TTS.BytePlusTTS.sample_rate: 16000
 | 拍照問答 | ~13 秒（裝置拍照上傳 ~7s + VLM ~6s） |
 | 主動推送（notify） | 請求→裝置開始播 ≈ 1–2 秒 |
 | 容器記憶體 | ~180 MB（4 GB 機器，swap 幾乎不用） |
+| 裝置 free sram | ~111 KB（穩定；熄屏時短暫升到 ~116 KB） |
+
+### 待機耗電（估算，未用電流計實測）
+
+| 狀態 | 估計電流 | 2000 mAh 可撐 |
+|---|---|---|
+| normal 待機（斷線 + 三層熄屏） | 25–40 mA | **50–80 小時（2–3 天）** |
+| persist 待機（保持連線 + 三層熄屏） | 40–55 mA | **36–50 小時（1.5–2 天）** |
+| 說話／播放中 | 100–150 mA | — |
+
+熄屏三層的貢獻：背光 5–15 mA、面板 DISPOFF 2–5 mA、停渲染 10–20 mA。
 
 已排除的瓶頸：思考鏈（22s→1.3s）、prompt 過長、工具定義、採樣率、位元率。
 
